@@ -1,21 +1,80 @@
 package main
 
 import (
+	"bufio"
+	"context"
 	"fmt"
+	"os"
+
+	"github.com/anthropics/anthropic-sdk-go"
 )
 
-//TIP <p>To run your code, right-click the code and select <b>Run</b>.</p> <p>Alternatively, click
-// the <icon src="AllIcons.Actions.Execute"/> icon in the gutter and select the <b>Run</b> menu item from here.</p>
-
 func main() {
-	//TIP <p>Press <shortcut actionId="ShowIntentionActions"/> when your caret is at the underlined text
-	// to see how GoLand suggests fixing the warning.</p><p>Alternatively, if available, click the lightbulb to view possible fixes.</p>
-	s := `gopher`
-	fmt.Printf("Hello and welcome, %s!\n", s)
+	client := anthropic.NewClient()
 
-	for i := 1; i <= 5; i++ {
-		//TIP <p>To start your debugging session, right-click your code in the editor and select the Debug option.</p> <p>We have set one <icon src="AllIcons.Debugger.Db_set_breakpoint"/> breakpoint
-		// for you, but you can always add more by pressing <shortcut actionId="ToggleLineBreakpoint"/>.</p>
-		fmt.Println("i =", 100/i)
+	scanner := bufio.NewScanner(os.Stdin)
+	getUserMessage := func() (string, bool) {
+		if !scanner.Scan() {
+			return "", false
+		}
+		return scanner.Text(), true
 	}
+
+	agent := NewAgent(&client, getUserMessage)
+	err := agent.Run(context.TODO())
+	if err != nil {
+		fmt.Printf("Error: %s\n", err.Error())
+	}
+}
+
+func NewAgent(client *anthropic.Client, getUserMessage func() (string, bool)) *Agent {
+	return &Agent{
+		client:         client,
+		getUserMessage: getUserMessage,
+	}
+}
+
+type Agent struct {
+	client         *anthropic.Client
+	getUserMessage func() (string, bool)
+}
+
+func (agent *Agent) Run(context context.Context) error {
+	conversation := []anthropic.MessageParam{}
+
+	fmt.Println("Chat with Claude (use 'ctrl+c' to exit)")
+
+	for {
+		fmt.Print("\u001b[94mYou\u001b[0m: ")
+		userInput, ok := agent.getUserMessage()
+		if !ok {
+			break
+		}
+
+		userMessage := anthropic.NewUserMessage(anthropic.NewTextBlock(userInput))
+		conversation = append(conversation, userMessage)
+
+		message, err := agent.runInference(context, conversation)
+		if err != nil {
+			return err
+		}
+		conversation = append(conversation, message.ToParam())
+
+		for _, content := range message.Content {
+			switch content.Type {
+			case "text":
+				fmt.Printf("\u001b[93mClaude\u001b[0m: %s\n", content.Text)
+			}
+		}
+	}
+	return nil
+}
+
+func (agent *Agent) runInference(context context.Context, conversation []anthropic.MessageParam) (*anthropic.Message, error) {
+	message, err := agent.client.Messages.New(context, anthropic.MessageNewParams{
+		Model:     anthropic.ModelClaude3_7SonnetLatest,
+		MaxTokens: int64(1024),
+		Messages:  conversation,
+	})
+	return message, err
 }
