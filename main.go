@@ -53,15 +53,18 @@ func (agent *Agent) Run(context context.Context) error {
 
 	fmt.Println("Chat with Claude (use 'ctrl+c' to exit)")
 
+	readUserInput := true
 	for {
-		fmt.Print("\u001b[94mYou\u001b[0m: ")
-		userInput, ok := agent.getUserMessage()
-		if !ok {
-			break
-		}
+		if readUserInput {
+			fmt.Print("\u001b[94mYou\u001b[0m: ")
+			userInput, ok := agent.getUserMessage()
+			if !ok {
+				break
+			}
 
-		userMessage := anthropic.NewUserMessage(anthropic.NewTextBlock(userInput))
-		conversation = append(conversation, userMessage)
+			userMessage := anthropic.NewUserMessage(anthropic.NewTextBlock(userInput))
+			conversation = append(conversation, userMessage)
+		}
 
 		message, err := agent.runInference(context, conversation)
 		if err != nil {
@@ -69,12 +72,22 @@ func (agent *Agent) Run(context context.Context) error {
 		}
 		conversation = append(conversation, message.ToParam())
 
+		toolResults := []anthropic.ContentBlockParamUnion{}
 		for _, content := range message.Content {
 			switch content.Type {
 			case "text":
 				fmt.Printf("\u001b[93mClaude\u001b[0m: %s\n", content.Text)
+			case "tool_use":
+				result := agent.executeTool(content.ID, content.Name, content.Input)
+				toolResults = append(toolResults, result)
 			}
 		}
+		if len(toolResults) == 0 {
+			readUserInput = true
+			continue
+		}
+		readUserInput = false
+		conversation = append(conversation, anthropic.NewUserMessage(toolResults...))
 	}
 	return nil
 }
@@ -99,6 +112,28 @@ func (agent *Agent) runInference(context context.Context, conversation []anthrop
 		Tools:     anthropicTools,
 	})
 	return message, err
+}
+
+func (agent *Agent) executeTool(id, name string, input json.RawMessage) anthropic.ContentBlockParamUnion {
+	var toolDef ToolDefinition
+	var found bool
+	for _, tool := range agent.tools {
+		if tool.Name == name {
+			toolDef = tool
+			found = true
+			break
+		}
+	}
+	if !found {
+		return anthropic.NewToolResultBlock(id, "tool not found", true)
+	}
+
+	fmt.Printf("\u001b[92mtool\u001b[0m: %s(%s)\n", name, input)
+	response, err := toolDef.Function(input)
+	if err != nil {
+		return anthropic.NewToolResultBlock(id, err.Error(), true)
+	}
+	return anthropic.NewToolResultBlock(id, response, false)
 }
 
 type ToolDefinition struct {
